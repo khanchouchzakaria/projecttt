@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FreshChain DApp (Standalone)</title>
+    <script src="https://cdn.ethers.io/lib/ethers-v6.7.0.umd.min.js" type="application/javascript"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            background-color: #f4f4f9;
+            padding: 20px;
+            margin: 0;
+            color: #333;
+        }
+        h1, h2, h3 { color: #2c3e50; }
+        .role-menu button {
+            padding: 10px 15px;
+            margin: 5px;
+            border: 1px solid #3498db;
+            background-color: white;
+            color: #3498db;
+            cursor: pointer;
+            transition: background-color 0.2s, color 0.2s;
+            border-radius: 4px;
+        }
+        .role-menu button.active { background-color: #3498db; color: white; }
+        .role-panel {
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+            margin-top: 15px;
+        }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px;
+            box-sizing: border-box;
+            border-radius: 4px;
+            border: 1px solid #bdc3c7;
+        }
+        .primary-button {
+            background-color: #2ecc71;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-top: 10px;
+            padding: 10px;
+            width: 100%;
+            border-radius: 4px;
+        }
+        .primary-button:hover { background-color: #27ae60; }
+        .history-output {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #f39c12;
+            background-color: #fefcf3;
+            border-radius: 4px;
+        }
+        .history-output ul { list-style-type: none; padding-left: 0; }
+        .history-output li { padding: 5px 0; border-bottom: 1px dotted #eee; }
+    </style>
+</head>
+<body>
+
+    <h1>FreshChain - Decentralized Traceability</h1>
+    <p>Connected Wallet: <strong id="currentAccountDisplay">Connecting...</strong></p>
+
+    <div class="role-menu" id="roleMenu">
+        </div>
+
+    <hr style="margin: 20px 0;">
+
+    <div id="roleComponentArea">
+        <h2>Connecting to Wallet and Blockchain...</h2>
+    </div>
+
+    <script>
+        // Use the global 'ethers' variable provided by the CDN script
+        const { ethers } = window;
+
+        // --- YOUR CONTRACT CONFIGURATION ---
+        // IMPORTANT: Replace this with the full JSON array of your ABI
+        const contractABI = [
+            {
+                "inputs": [
+                    { "internalType": "uint256", "name": "batchId", "type": "uint256" },
+                    { "internalType": "int256", "name": "temperature", "type": "int256" },
+                    { "internalType": "int256", "name": "humidity", "type": "int256" },
+                    { "internalType": "string", "name": "location", "type": "string" }
+                ],
+                "name": "addSensorData",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+            // ... PASTE THE REST OF YOUR ABI HERE ...
+            {
+                "inputs": [
+                    { "internalType": "address", "name": "", "type": "address" }
+                ],
+                "name": "transporters",
+                "outputs": [
+                    { "internalType": "bool", "name": "", "type": "bool" }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+             {
+                "inputs": [
+                    { "internalType": "uint256", "name": "_batchId", "type": "uint256" },
+                    { "internalType": "string", "name": "_productName", "type": "string" },
+                    { "internalType": "uint256", "name": "_quantity", "type": "uint256" }
+                ],
+                "name": "createBatch",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+             {
+                "inputs": [
+                    { "internalType": "uint256", "name": "_batchId", "type": "uint256" },
+                    { "internalType": "bool", "name": "_passedInspection", "type": "bool" }
+                ],
+                "name": "markAsArrived",
+                "outputs": [],
+                "stateMutability": "nonpayable",
+                "type": "function"
+            },
+             {
+                "inputs": [
+                    { "internalType": "uint256", "name": "_batchId", "type": "uint256" }
+                ],
+                "name": "getBatchHistory",
+                "outputs": [
+                    { "internalType": "string", "name": "productName", "type": "string" },
+                    { "internalType": "uint256", "name": "quantity", "type": "uint256" },
+                    { "internalType": "bool", "name": "arrived", "type": "bool" },
+                    { "components": [ /* struct SensorData */], "internalType": "struct FreshChain.SensorData[]", "name": "sensorData", "type": "tuple[]" },
+                    { "components": [ /* struct OwnershipLog */], "internalType": "struct FreshChain.OwnershipLog[]", "name": "ownershipHistory", "type": "tuple[]" }
+                ],
+                "stateMutability": "view",
+                "type": "function"
+            },
+        ];
+        const contractAddress = '0xfdf8021c7adba0d5ac3d0cda16ca9344e5ccbc55'; 
+
+        // Global state variables
+        let freshChainContract = null;
+        let currentAccount = null;
+        const ROLES = ['Admin', 'Producer', 'Transporter', 'Distributor', 'Retailer', 'Customer'];
+        let selectedRole = null;
+
+        // --- Core Web3 Connection and Initialization ---
+
+        async function connectWallet() {
+            const display = document.getElementById('currentAccountDisplay');
+            const roleArea = document.getElementById('roleComponentArea');
+            roleArea.innerHTML = "<h2>Connecting to Wallet and Blockchain...</h2>";
+            
+            if (typeof window.ethereum === 'undefined') {
+                display.textContent = 'Please install MetaMask!';
+                roleArea.innerHTML = "<h2>Please install MetaMask to connect.</h2>";
+                return;
+            }
+
+            try {
+                const provider = new ethers.BrowserProvider(window.ethereum);
+                const accounts = await provider.send('eth_requestAccounts', []);
+                const signer = await provider.getSigner();
+                
+                currentAccount = accounts[0];
+                display.textContent = currentAccount;
+                
+                freshChainContract = new ethers.Contract(
+                    contractAddress,
+                    contractABI,
+                    signer
+                );
+                
+                // Render the default view after connection
+                renderRoleMenu();
+                renderRoleComponent();
+
+                // Handle account changes
+                window.ethereum.on('accountsChanged', (newAccounts) => {
+                    currentAccount = newAccounts[0];
+                    display.textContent = currentAccount;
+                    renderRoleComponent(); // Re-render if account changes
+                });
+                
+            } catch (error) {
+                console.error("Error connecting wallet or initializing contract:", error);
+                display.textContent = 'Error connecting.';
+                roleArea.innerHTML = `<h2>Error connecting: ${error.message}</h2>`;
+            }
+        }
+
+        // --- Contract Interaction Functions ---
+
+        async function callContractFunction(name, args, successMessage) {
+            if (!freshChainContract) {
+                alert("Contract not initialized.");
+                return;
+            }
+            try {
+                const tx = await freshChainContract[name](...args);
+                alert(`Transaction sent! Waiting for confirmation... Hash: ${tx.hash.substring(0, 10)}...`);
+                await tx.wait(); 
+                alert(`${successMessage} Transaction mined successfully!`);
+                return true;
+            } catch (error) {
+                console.error(`Function ${name} failed:`, error);
+                alert(`Error: ${error.reason || error.message}`);
+                return false;
+            }
+        }
+
+        const handleCreateBatch = (id, name, quantity) => 
+            callContractFunction('createBatch', [id, name, quantity], `Batch ${id} created.`);
+        
+        const handleAddSensorData = (batchId, temperature, humidity, location) => 
+            callContractFunction('addSensorData', [batchId, temperature, humidity, location], `Sensor data logged for Batch ${batchId}.`);
+
+        const handleTransferOwnership = (batchId, newOwnerAddress) => 
+            callContractFunction('transferOwnership', [batchId, newOwnerAddress], `Ownership of Batch ${batchId} transferred.`);
+
+        const handleMarkAsArrived = (batchId, passedInspection) => 
+            callContractFunction('markAsArrived', [batchId, passedInspection], `Batch ${batchId} marked as arrived.`);
+        
+        async function getHistory(batchId) {
+            if (!freshChainContract) return null;
+            try {
+                const history = await freshChainContract.getBatchHistory(batchId);
+                return history;
+            } catch (error) {
+                console.error("Failed to fetch history:", error);
+                alert(`Error fetching history: ${error.reason || error.message}`);
+                return null;
+            }
+        }
+
+        // --- UI Rendering Functions ---
+
+        function renderRoleMenu() {
+            const menu = document.getElementById('roleMenu');
+            menu.innerHTML = '';
+            ROLES.forEach(role => {
+                const button = document.createElement('button');
+                button.textContent = role;
+                button.onclick = () => {
+                    selectedRole = role;
+                    renderRoleComponent();
+                    // Update active state (basic implementation)
+                    menu.querySelectorAll('button').forEach(btn => btn.classList.remove('active'));
+                    button.classList.add('active');
+                };
+                menu.appendChild(button);
+            });
+        }
+
+        function renderRoleComponent() {
+            const area = document.getElementById('roleComponentArea');
+            area.innerHTML = ''; // Clear previous content
+
+            if (!currentAccount) {
+                area.innerHTML = "<h2>Please install and connect your MetaMask wallet.</h2>";
+                return;
+            }
+            
+            let htmlContent = '';
+
+            switch (selectedRole) {
+                case 'Producer':
+                    htmlContent = renderProducerUI();
+                    break;
+                case 'Transporter':
+                    htmlContent = renderTransporterUI();
+                    break;
+                case 'Distributor':
+                    htmlContent = renderTransferUI('Distributor');
+                    break;
+                case 'Retailer':
+                    htmlContent = renderRetailerUI();
+                    break;
+                case 'Customer':
+                    htmlContent = renderCustomerUI();
+                    break;
+                case 'Admin':
+                    htmlContent = renderAdminUI();
+                    break;
+                default:
+                    area.innerHTML = '<h2 class="select-prompt">← Please select your User Role from the menu above.</h2>';
+                    return;
+            }
+
+            area.innerHTML = htmlContent;
+            // Attach event listeners after content is in the DOM
+            if (selectedRole) {
+                attachListeners(selectedRole);
+            }
+        }
+        
+        // --- Specific Role UI Functions (Return HTML strings) ---
+        
+        function renderAdminUI() {
+            return `<div class="role-panel">
+                        <h3>👑 Admin Panel: Register Actors</h3>
+                        <p>Use the Admin functions to register new actors' addresses (Requires proper forms and logic).</p>
+                        <button class="primary-button" onclick="alert('Admin registration logic disabled in standalone demo.');">Register Actor (Demo)</button>
+                    </div>`;
+        }
+
+        function renderProducerUI() {
+            return `
+                <div class="form-container">
+                    <h3>🚜 Producer Panel: Create New Batch</h3>
+                    <form id="producerForm">
+                        <div class="form-group"><label>Batch ID:</label><input type="number" id="pBatchId" required></div>
+                        <div class="form-group"><label>Product Name:</label><input type="text" id="pName" required></div>
+                        <div class="form-group"><label>Quantity:</label><input type="number" id="pQuantity" required></div>
+                        <button type="submit" class="primary-button">Create Batch</button>
+                    </form>
+                </div>
+                <hr style="margin: 20px 0;">
+                ${renderTransferUI('Producer')}
+            `;
+        }
+
+        function renderTransporterUI() {
+            return `
+                <div class="form-container">
+                    <h3>🚚 Log Environmental Data (Transporter)</h3>
+                    <form id="transporterForm">
+                        <div class="form-group"><label>Batch ID:</label><input type="number" id="tBatchId" required></div>
+                        <div class="form-group"><label>Temperature (°C):</label><input type="number" id="tTemp" min="-10" max="40" required></div>
+                        <div class="form-group"><label>Humidity (%):</label><input type="number" id="tHum" min="0" max="40" required></div>
+                        <div class="form-group"><label>Current Location:</label><input type="text" id="tLoc" required></div>
+                        <button type="submit" class="primary-button">Log Data to Blockchain</button>
+                    </form>
+                </div>
+                <hr style="margin: 20px 0;">
+                ${renderTransferUI('Transporter')}
+            `;
+        }
+
+        function renderTransferUI(actorRole) {
+            return `
+                <div class="form-container">
+                    <h3>📦 ${actorRole} Panel: Transfer Ownership</h3>
+                    <form id="${actorRole.toLowerCase()}TransferForm">
+                        <div class="form-group"><label>Batch ID:</label><input type="number" id="transferBatchId" required></div>
+                        <div class="form-group"><label>New Owner Address:</label><input type="text" id="newOwnerAddress" placeholder="0x..." required></div>
+                        <button type="submit" class="primary-button">Sign & Transfer Batch</button>
+                    </form>
+                </div>
+            `;
+        }
+
+        function renderRetailerUI() {
+            return `
+                <div class="form-container">
+                    <h3>🏪 Retailer Panel</h3>
+                    <div class="role-panel" style="margin-bottom: 20px;">
+                        <h4>1. Accept Batch Ownership (from Distributor)</h4>
+                        <form id="retailerTransferForm">
+                            <div class="form-group"><label>Batch ID to Accept:</label><input type="number" id="rTransferBatchId" required></div>
+                            <div class="form-group"><label>Retailer Address (Your Address):</label><input type="text" id="rNewOwnerAddress" placeholder="0x..." required></div>
+                            <button type="submit" class="primary-button">Transfer Ownership to Retailer</button>
+                        </form>
+                    </div>
+                    <div class="role-panel">
+                        <h4>2. Mark Final Arrival & Inspection</h4>
+                        <form id="retailerInspectionForm">
+                            <div class="form-group"><label>Batch ID to Inspect:</label><input type="number" id="iBatchId" required></div>
+                            <div class="form-group" style="display: flex; align-items: center;">
+                                <label style="width: auto; margin-right: 15px;">Inspection Status:</label>
+                                <select id="inspectionStatus" style="width: 100%; padding: 10px;">
+                                    <option value="true">PASSED ✅</option>
+                                    <option value="false">FAILED ❌</option>
+                                </select>
+                            </div>
+                            <button type="submit" class="primary-button" style="background-color: #f39c12;">Mark As Arrived</button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderCustomerUI() {
+            return `
+                <div class="role-panel">
+                    <h3>🔍 Customer: View History</h3>
+                    <form id="customerForm">
+                        <input type="number" placeholder="Enter Batch ID (e.g., 101)" id="customerBatchId" required style="width: 100%; padding: 10px; box-sizing: border-box; border-radius: 4px; border: 1px solid #bdc3c7;">
+                        <button type="submit" class="primary-button">View History</button>
+                    </form>
+                    <div id="historyOutput" class="history-output" style="display: none;"></div>
+                </div>
+            `;
+        }
+
+        // --- Event Listeners and Form Submission Logic ---
+        
+        function attachListeners(role) {
+            // Producer Form Listener
+            if (role === 'Producer' && document.getElementById('producerForm')) {
+                document.getElementById('producerForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const id = parseInt(document.getElementById('pBatchId').value);
+                    const name = document.getElementById('pName').value;
+                    const quantity = parseInt(document.getElementById('pQuantity').value);
+                    await handleCreateBatch(id, name, quantity);
+                };
+            }
+            
+            // Transporter Form Listener
+            if (role === 'Transporter' && document.getElementById('transporterForm')) {
+                document.getElementById('transporterForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const id = parseInt(document.getElementById('tBatchId').value);
+                    const temp = parseInt(document.getElementById('tTemp').value);
+                    const hum = parseInt(document.getElementById('tHum').value);
+                    const loc = document.getElementById('tLoc').value;
+
+                    if (temp < -10 || temp > 40) { alert("Temp must be -10°C to 40°C."); return; }
+                    if (hum < 0 || hum > 40) { alert("Humidity must be 0% to 40%."); return; }
+                    
+                    await handleAddSensorData(id, temp, hum, loc);
+                };
+            }
+
+            // Generic Transfer Listeners (Producer, Transporter, Distributor, Retailer Acceptance)
+            const transferFormId = `${role.toLowerCase()}TransferForm`;
+            if (document.getElementById(transferFormId)) {
+                document.getElementById(transferFormId).onsubmit = async (e) => {
+                    e.preventDefault();
+                    let batchId, newOwnerAddress;
+                    
+                    // Specific logic for Retailer form fields
+                    if (role === 'Retailer') {
+                        batchId = parseInt(document.getElementById('rTransferBatchId').value);
+                        newOwnerAddress = document.getElementById('rNewOwnerAddress').value;
+                    } else {
+                        batchId = parseInt(document.getElementById('transferBatchId').value);
+                        newOwnerAddress = document.getElementById('newOwnerAddress').value;
+                    }
+
+                    await handleTransferOwnership(batchId, newOwnerAddress);
+                };
+            }
+
+            // Retailer Inspection Listener
+            if (role === 'Retailer' && document.getElementById('retailerInspectionForm')) {
+                document.getElementById('retailerInspectionForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const id = parseInt(document.getElementById('iBatchId').value);
+                    const status = document.getElementById('inspectionStatus').value === 'true';
+                    await handleMarkAsArrived(id, status);
+                };
+            }
+            
+            // Customer Listener
+            if (role === 'Customer' && document.getElementById('customerForm')) {
+                document.getElementById('customerForm').onsubmit = async (e) => {
+                    e.preventDefault();
+                    const batchId = parseInt(document.getElementById('customerBatchId').value);
+                    const data = await getHistory(batchId);
+                    
+                    const outputDiv = document.getElementById('historyOutput');
+                    outputDiv.style.display = 'block';
+
+                    if (data) {
+                        const [productName, quantity, arrived, sensorData, ownershipHistory] = data;
+                        
+                        let sensorList = sensorData.map(log => `
+                            <li>
+                                Temp: ${log.temperature.toString()}°C, Hum: ${log.humidity.toString()}%, 
+                                Loc: ${log.location}, By: ${log.recorder.substring(0, 8)}...
+                            </li>
+                        `).join('');
+
+                        let ownershipList = ownershipHistory.map(log => `
+                            <li>
+                                ${log.from.substring(0, 8)}... &rarr; ${log.to.substring(0, 8)}...
+                            </li>
+                        `).join('');
+                        
+                        outputDiv.innerHTML = `
+                            <h4>Batch History for ID ${batchId}</h4>
+                            <p><strong>Product:</strong> ${productName}</p>
+                            <p><strong>Quantity:</strong> ${quantity.toString()} units</p>
+                            <p><strong>Final Inspection:</strong> ${arrived ? 'PASSED ✅' : 'FAILED ❌'}</p>
+                            
+                            <h5>Environmental Log:</h5>
+                            <ul>${sensorList}</ul>
+                            
+                            <h5>Ownership Chain:</h5>
+                            <ul>${ownershipList}</ul>
+                        `;
+                    } else {
+                        outputDiv.innerHTML = `<h4>Batch History for ID ${batchId} not found or error occurred.</h4>`;
+                    }
+                };
+            }
+        }
+
+        // Initialize the DApp
+        connectWallet();
+    </script>
+
+</body>
+</html>
